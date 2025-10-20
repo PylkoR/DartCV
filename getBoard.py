@@ -2,8 +2,11 @@ import cv2 as cv
 import numpy as np
 
 # --- Twoje zakresy HSV z colorFinder ---
-hsvGreen = {'hmin': 33, 'smin': 70, 'vmin': 60, 'hmax': 130, 'smax': 255, 'vmax': 255}
-hsvRed   = {'hmin': 0,  'smin': 93, 'vmin': 126, 'hmax': 14,  'smax': 255, 'vmax': 255}
+hsvGreen_wide = {'hmin': 33, 'smin': 70, 'vmin': 60, 'hmax': 130, 'smax': 255, 'vmax': 255}
+hsvRed_wide   = {'hmin': 0,  'smin': 93, 'vmin': 126, 'hmax': 14,  'smax': 255, 'vmax': 255}
+
+hsvGreen = {'hmin': 39, 'smin': 108, 'vmin': 64, 'hmax': 96, 'smax': 255, 'vmax': 255}
+hsvRed = {'hmin': 0, 'smin': 133, 'vmin': 108, 'hmax': 13, 'smax': 255, 'vmax': 255}
 
 IMG = r"pics/frame1.png"  # <- ścieżka do Twojej klatki
 # --- 1) Wczytanie obrazu i konwersja do HSV ---
@@ -101,7 +104,7 @@ dst = np.float32([
 
 # 3) Homografia + warp
 M = cv.getPerspectiveTransform(src, dst)
-rectified = cv.warpPerspective(img, M, (1000, 1000))
+rectified = cv.warpPerspective(img, M, (960, 960))
 
 # 4) Podgląd / zapis
 cv.imshow("rectified", rectified)
