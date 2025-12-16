@@ -1,25 +1,37 @@
+# SKRYPT DO DETEKCJI RZUTÓW REALTIME
 import cv2
 import numpy as np
 import os
 import json
 import math
 
-# --- KONFIGURACJA ---
+# --- KONFIGURACJA SYSTEMU ---
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-VIDEO_PATH = os.path.join(PROJECT_ROOT, "pics", "dart_normal.mp4")
-JSON_PATH = os.path.join(PROJECT_ROOT, "output", "calibration_data.json")
+VIDEO_PATH = os.path.join(PROJECT_ROOT, "dart_normal.mp4")
+JSON_PATH = os.path.join(PROJECT_ROOT, "calibration_data.json")
 
-# Parametry detekcji
-MIN_AREA_DART = 800      
-MAX_AREA_DART = 8000     
-MAX_PLAYER_AREA = 12000  
-MIN_FRAMES_STABLE = 15   
-MOTION_THRESHOLD = 30    
-CANVAS_SIZE = (960, 960) # Rozmiar wirtualnej tarczy do obliczeń
+# 1. Parametry Obrazu i Filtrów (Jakość obrazu)
+BLUR_KERNEL_SIZE = (5, 5)       # Rozmycie obrazu (wygładzanie szumów kamery)
+MORPH_GLUE_SIZE = (3, 3)        # "Klej" (Close) - łączy rozerwane elementy rzutki
+MORPH_CLEAN_SIZE = (2, 2)       # "Czyszczenie" (Open) - usuwa drobny piasek/szum
 
+# 2. Parametry Detekcji Ruchu (Czułość)
+MOTION_THRESHOLD = 30           # Próg różnicy kolorów (0-255). Mniej = czulej.
+STABILITY_PIXEL_LIMIT = 35      # Ile pikseli może drgać, żeby uznać obraz za stabilny
+MIN_FRAMES_STABLE = 15          # Ile klatek musi być stabilnie, żeby zaliczyć rzut
+
+# 3. Parametry Logiki (Rozmiary obiektów)
+MIN_AREA_DART = 1000            # Minimalna wielkość rzutki (px)
+MAX_AREA_DART = 7000            # Maksymalna wielkość rzutki (px)
+MAX_PLAYER_AREA = 7000          # Powyżej tego uznajemy, że to człowiek (Reset)
+MIN_NOISE_AREA = 900            # Filtr końcowy: ignoruj obiekty mniejsze niż to (px)
+
+# 4. Parametry Gry
+CANVAS_SIZE = (960, 960) 
 SCORE_MAP = [6, 13, 4, 18, 1, 20, 5, 12, 9, 14, 11, 8, 16, 7, 19, 3, 17, 2, 15, 10]
 
-# --- WCZYTANIE DANYCH ---
+
+# --- WCZYTANIE KALIBRACJI TARCZY ---
 if not os.path.exists(JSON_PATH):
     print("Błąd: Brak pliku calibration_data.json!")
     exit()
@@ -30,18 +42,20 @@ with open(JSON_PATH, 'r') as f:
     CENTER = tuple(calib_data["center"])
     RADIUS = calib_data["radius"]
 
-print(f"Start systemu. Promień tarczy (wewn. obliczenia): {RADIUS:.1f}px")
+print(f"--- START SYSTEMU ---")
+print(f"Promień tarczy: {RADIUS:.1f}px")
+print(f"Filtry: Blur={BLUR_KERNEL_SIZE}, Glue={MORPH_GLUE_SIZE}, Clean={MORPH_CLEAN_SIZE}")
+print(f"Logika: MinDart={MIN_AREA_DART}, NoiseFilter={MIN_NOISE_AREA}")
 
-# --- FUNKCJE ---
-
+# --- FUNKCJE POMOCNICZE ---
 def transform_point(point, matrix):
-    """Przelicza punkt z kamery na wirtualną, wyprostowaną tarczę."""
+    """Przelicza punkt z kamery na wyprostowaną tarczę."""
     pts = np.array([[[point[0], point[1]]]], dtype='float32')
     rect_pts = cv2.perspectiveTransform(pts, matrix)
     return tuple(map(int, rect_pts[0][0]))
 
 def calculate_score(point, center, radius):
-    """Oblicza wynik (matematyka na wyprostowanych współrzędnych)."""
+    """Oblicza wynik"""
     x, y = point
     dx = x - center[0]
     dy = y - center[1]
@@ -70,17 +84,17 @@ def find_tip_in_cloud(mask):
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     valid_pts = []
     for cnt in contours:
-        if cv2.contourArea(cnt) > 50:
+        if cv2.contourArea(cnt) > 50: 
             valid_pts.append(cnt)
             
     if not valid_pts: return None
     
     all_points = np.vstack(valid_pts)
+    # Szukamy punktu z największym Y
     tip = tuple(all_points[all_points[:, :, 1].argmax()][0])
     return tip
 
-# --- MAIN ---
-
+# --- PĘTLA GŁÓWNA ---
 cap = cv2.VideoCapture(VIDEO_PATH)
 ret, first_frame = cap.read()
 if not ret: exit()
@@ -88,31 +102,35 @@ if not ret: exit()
 # Inicjalizacja tła
 raw_crop = first_frame[200:1280, :]
 gray_bg = cv2.cvtColor(raw_crop, cv2.COLOR_BGR2GRAY)
-gray_bg = cv2.GaussianBlur(gray_bg, (7, 7), 0)
+gray_bg = cv2.GaussianBlur(gray_bg, BLUR_KERNEL_SIZE, 0)
 
 prev_gray = gray_bg.copy()
 current_bg_gray = gray_bg.copy()
 
 frames_stable = 0
-# Historia przechowuje teraz: (punkt_RAW, punkty, etykieta)
 game_history = [] 
 total_score = 0
 round_score = 0
 last_action_text = "Czekam na rzut..."
+
+WINDOW_NAME = "Dart Live System"
+cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+cv2.resizeWindow(WINDOW_NAME, 960, 960)
 
 while True:
     ret, frame = cap.read()
     if not ret: break
 
     # 1. Obraz na żywo
-    raw_crop = frame[200:1280, :] # To będziemy wyświetlać
+    raw_crop = frame[200:1280, :] 
     gray = cv2.cvtColor(raw_crop, cv2.COLOR_BGR2GRAY)
-    gray = cv2.GaussianBlur(gray, (7, 7), 0)
+    gray = cv2.GaussianBlur(gray, BLUR_KERNEL_SIZE, 0)
 
     # 2. Stabilizacja
     delta = cv2.absdiff(prev_gray, gray)
     thresh = cv2.threshold(delta, 25, 255, cv2.THRESH_BINARY)[1]
-    if cv2.countNonZero(thresh) < 50:
+    
+    if cv2.countNonZero(thresh) < STABILITY_PIXEL_LIMIT:
         frames_stable += 1
     else:
         frames_stable = 0
@@ -123,67 +141,76 @@ while True:
         diff = cv2.absdiff(current_bg_gray, gray)
         _, mask = cv2.threshold(diff, MOTION_THRESHOLD, 255, cv2.THRESH_BINARY)
         
-        # Chmura punktów (Klejenie + Czyszczenie)
-        kernel_glue = np.ones((15, 15), np.uint8)
+        # --- ZAAWANSOWANE PRZETWARZANIE MASKI ---
+        
+        # A. Morfologia - Użycie zdefiniowanych kerneli
+        kernel_glue = np.ones(MORPH_GLUE_SIZE, np.uint8) 
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel_glue)
-        kernel_clean = np.ones((4, 4), np.uint8)
+        
+        kernel_clean = np.ones(MORPH_CLEAN_SIZE, np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel_clean)
+        
+        # B. Inteligentny Filtr Szumów
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        clean_mask = np.zeros_like(mask)
+        
+        for cnt in contours:
+            if cv2.contourArea(cnt) > MIN_NOISE_AREA:
+                cv2.drawContours(clean_mask, [cnt], -1, 255, -1)
+        
+        mask = clean_mask 
+        
+        # --- KONIEC PRZETWARZANIA ---
         
         change_area = cv2.countNonZero(mask)
 
+        # Logika Gry
         # A. RZUT
         if MIN_AREA_DART < change_area < MAX_AREA_DART:
-            raw_tip = find_tip_in_cloud(mask) # Punkt w układzie KAMERY
+            raw_tip = find_tip_in_cloud(mask)
             
             if raw_tip:
-                # Transformacja TYLKO do obliczeń
                 rect_tip = transform_point(raw_tip, MATRIX)
                 pts, label = calculate_score(rect_tip, CENTER, RADIUS)
                 
-                # Zapisujemy RAW_TIP do historii, żeby rysować na kamerze
                 game_history.append((raw_tip, pts, label))
                 
                 total_score += pts
                 round_score += pts
                 last_action_text = f"Trafienie: {label} ({pts})"
-                print(f"Rzut! {last_action_text}")
+                print(f"Rzut. Wynik: {last_action_text}")
                 
                 current_bg_gray = gray.copy()
 
         # B. RESET
         elif change_area >= MAX_PLAYER_AREA:
-            print("Reset rundy.")
+            print(f"Reset rundy. Area: {change_area}")
             last_action_text = "Wyjmowanie lotek..."
             current_bg_gray = gray.copy()
             round_score = 0
             game_history.clear()
 
-    # --- WIZUALIZACJA NA LIVE FEEDZIE ---
-    display_img = raw_crop.copy() # Bierzemy aktualną klatkę wideo
+    # --- WIZUALIZACJA ---
+    display_img = raw_crop.copy() 
 
-    # Rysowanie historii (punkty "przyklejone" do obrazu)
+    # Rysowanie historii
     for (px, py), p_val, p_lbl in game_history:
-        # Cień kropki dla lepszej widoczności
         cv2.circle(display_img, (px, py), 9, (0, 0, 0), -1) 
-        cv2.circle(display_img, (px, py), 7, (0, 0, 255), -1) # Czerwona kropka
-        cv2.circle(display_img, (px, py), 2, (0, 255, 255), -1) # Żółty środek
+        cv2.circle(display_img, (px, py), 7, (0, 0, 255), -1) 
+        cv2.circle(display_img, (px, py), 2, (0, 255, 255), -1) 
 
-    # Interfejs (Półprzezroczysty pasek na górze)
+    # Interfejs
     overlay = display_img.copy()
     cv2.rectangle(overlay, (0, 0), (1080, 100), (0, 0, 0), -1)
     cv2.addWeighted(overlay, 0.6, display_img, 0.4, 0, display_img)
 
-    # Napisy
     cv2.putText(display_img, f"TOTAL: {total_score}", (20, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 3)
     cv2.putText(display_img, f"RUNDA: {round_score}", (450, 70), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 3)
-    
-    # Status na dole
     cv2.putText(display_img, last_action_text, (20, 1050), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.imshow("Dart Live System", display_img)
+    cv2.imshow(WINDOW_NAME, display_img)
     
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+    if cv2.waitKey(10) == 27: break
 
 cap.release()
 cv2.destroyAllWindows()

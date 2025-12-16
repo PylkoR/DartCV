@@ -6,20 +6,14 @@ import json
 
 # --- Konfiguracja ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-VIDEO_PATH = os.path.join(BASE_DIR, "pics", "dart_normal.mp4")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
+VIDEO_PATH = os.path.join(BASE_DIR, "dart_normal.mp4")
+OUTPUT_DIR = os.path.join(BASE_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Ustawienia obrazu
 CANVAS_SIZE = (960, 960)     # Rozmiar okna wyjściowego
-BOARD_SIZE = (660, 660)      # Rozmiar samej tarczy w pikselach (do obliczeń proporcji)
-
-# NOWOŚĆ: Skala widoku (0.7 oznacza, że kliknięty obszar zajmie 70% obrazu)
-# Zmniejsz to, żeby widzieć więcej otoczenia tarczy (np. oponę)
-VIEW_SCALE = 0.6 
-
-# NOWOŚĆ: Jeśli obraz jest nadal lustrzanym odbiciem, zmień na True
-FORCE_MIRROR_FIX = False 
+BOARD_SIZE = (660, 660)      # Rozmiar samej tarczy w pikselach
+VIEW_SCALE = 0.6              # Skala widoku (mniejsza = więcej otoczenia)
 
 # Zmienne globalne
 perspective_points = []
@@ -81,14 +75,14 @@ print("--- KROK 1: Zaznacz 4 punkty na obwodzie tarczy ---")
 cv2.imshow("Krok 1: Zaznacz 4 rogi", img_display)
 
 while len(perspective_points) < 4:
-    if cv2.waitKey(10) == 27: exit() # Esc
+    if cv2.waitKey(10) == 27: exit()
 cv2.destroyAllWindows()
 
 # 3. Transformacja (Prostowanie + Zoom Out)
 pts_src = np.array(perspective_points, dtype="float32")
 pts_src = order_points(pts_src) # Automatyczne sortowanie punktów
 
-# Obliczamy rozmiar docelowy z uwzględnieniem skali (żeby widzieć otoczenie)
+# Obliczam rozmiar docelowy z uwzględnieniem skali (żeby widzieć otoczenie)
 dst_w = int(CANVAS_SIZE[0] * VIEW_SCALE)
 dst_h = int(CANVAS_SIZE[1] * VIEW_SCALE)
 
@@ -106,10 +100,6 @@ pts_dst = np.float32([
 
 matrix = cv2.getPerspectiveTransform(pts_src, pts_dst)
 rectified_img = cv2.warpPerspective(cropped_img, matrix, CANVAS_SIZE)
-
-# Fix na lustrzane odbicie (jeśli sortowanie nie pomogło przez kamerę)
-if FORCE_MIRROR_FIX:
-    rectified_img = cv2.flip(rectified_img, 1)
 
 grid_display = rectified_img.copy()
 
@@ -156,6 +146,6 @@ cv2.destroyAllWindows()
 cv2.imwrite(os.path.join(OUTPUT_DIR, "board_rectified.png"), rectified_img)
 cv2.imwrite(os.path.join(OUTPUT_DIR, "board_with_grid.png"), final_img)
 
-data = {"center": center, "radius": avg_radius, "perspective_matrix": matrix.tolist(), "mirror_fix": FORCE_MIRROR_FIX}
+data = {"center": center, "radius": avg_radius, "perspective_matrix": matrix.tolist()}
 with open(os.path.join(OUTPUT_DIR, "calibration_data.json"), 'w') as f:
     json.dump(data, f, indent=4)
